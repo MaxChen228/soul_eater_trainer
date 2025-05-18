@@ -1,0 +1,87 @@
+# Main training script settings
+training_settings:
+  n_episodes: 10000
+  max_t_per_episode: 700
+  eps_start: 1.0
+  eps_end: 0.01
+  eps_decay: 0.999
+  load_checkpoint: false
+  checkpoint_to_load: "bug_agent_ep1000.pth" # 要載入的檢查點檔案名稱 (如果 load_checkpoint: true)
+  save_checkpoint_every: 500 # 每多少個 episode 儲存一次檢查點
+  final_model_name: "bug_agent_ep2500.pth"
+  render_each_n_episodes: 0 # 每 N 輪渲染一次，設為0則不渲染
+
+# DQN Agent hyperparameters
+agent_hyperparameters:
+  buffer_size: 100000  # int(1e5)
+  batch_size: 64
+  gamma: 0.99
+  tau: 0.001       # 1e-3
+  lr: 0.0005       # 5e-4
+  update_every: 4
+  target_update_every: 100 # DQN目標網路更新頻率
+
+# Training Environment (BugSkillTrainingEnv) settings
+environment_settings:
+  skill_params:
+    bug_x_rl_move_speed: 0.01
+    bug_y_rl_move_speed: 0.01
+    base_y_speed: 0.00 # 基礎Y軸速度設為0，讓獎勵驅動Y軸移動
+    duration_ms: 60000 # 較長的持續時間方便學習複雜行為
+    bug_visual_radius_norm_factor: 0.0375
+
+  opponent_ai_settings:
+    use_dynamic_opponent: true
+    model_filename: "level2.pth"
+    paddle_move_speed: 0.03
+
+  # ⭐️ 新增：獎勵塑造 (Reward Shaping) 參數
+  reward_shaping:
+    # 1. 基礎獎勵/懲罰
+    step_penalty: -0.01                # 每一步的基礎懲罰 (鼓勵效率)
+    score_reward: 15.0                 # 成功得分的獎勵
+    hit_paddle_penalty: -7.0           # 撞到目標板子的懲罰
+    duration_expired_penalty: -2.0     # 技能時間到但未得分/撞板的懲罰
+
+    # 2. 「布朗運動」/ 移動獎勵 (避免靜止)
+    # 如果蟲移動了 (與上一幀位置不同)，給予少量正獎勵
+    # 注意：如果移動速度很快，這個獎勵可能會頻繁觸發。
+    # 也可以設計成如果選擇了非靜止動作(0,1,2,3)就給獎勵。
+    movement_reward: 0.005             # 如果蟲實際移動了，給予此獎勵
+                                       # 或者 action_taken_reward (如果動作非靜止)
+
+    # 3. 「急躁」衝鋒懲罰 (隨時間遞增)
+    # 懲罰公式: -(time_penalty_base + time_penalty_factor * (current_step / max_steps_in_episode)^time_penalty_exponent)
+    # current_step 是當前 episode 內的步數
+    # max_steps_in_episode 可以從 training_settings.max_t_per_episode 獲取
+    impatience_penalty_enabled: true
+    impatience_base: 0.001             # 懲罰的基礎值 (m)
+    impatience_factor: 0.05            # 懲罰的遞增因子 (n)
+    impatience_exponent: 2.0           # 時間的指數 (k)
+
+    # 4. 遠離目標板子 / 靠近得分線
+    #    距離以正規化單位計算 (0.0 到 1.0)
+    #    目標板子在上方 (y=0 附近是其板面，y更小是得分區)
+    
+    # 4a. 靠近得分線 (Y 軸)
+    #     蟲的 Y 座標 (self.mock_env_for_skill.ball_y)，越小越好 (因為目標板在上方)
+    #     獎勵 = progress_to_goal_factor * (previous_y_distance - current_y_distance)
+    #     如果 current_y_distance < previous_y_distance (更近了)，則獎勵為正
+    progress_to_goal_y_factor: 0.5     # 向目標 Y 軸移動的獎勵因子
+
+    # 4b. 遠離目標板子的 Y 軸表面 (避免撞板)
+    #     蟲的 Y 座標 (ball_y) 與目標板子表面 Y (paddle_surface_y) 的距離
+    #     目標板子在上方，其表面 y_min=0, y_max=self.paddle_height_normalized
+    #     如果蟲在板子下方 (ball_y > paddle_surface_y_max)，則距離越大越好
+    #     懲罰 = -distance_to_paddle_y_penalty_factor / (distance + epsilon) (距離越小懲罰越大)
+    #     或者，如果蟲在板子的 "危險區域" (例如板子前方一定範圍內)，給予固定懲罰
+    paddle_danger_zone_y_depth: 0.15   # 板子前方 Y 軸多深算危險區 (正規化)
+    in_paddle_danger_zone_y_penalty: -0.1 # 進入板子Y軸危險區的懲罰
+
+    # 4c. 在 X 軸上對準目標板子的空隙 (更高級的行為，可選)
+    #     如果蟲的 X 在目標板子的 X 範圍之外，給予獎勵
+    #     這鼓勵蟲從側面攻擊，而不是直直撞向板子中間
+    align_with_paddle_gap_x_reward: 0.02 # 如果蟲的X對準了板子旁邊的空隙
+
+    # 4d. X 軸探索 (類似布朗運動，但針對X軸，避免只走直線)
+    x_exploration_reward: 0.002        # 如果X方向發生變化或執行了左右動作

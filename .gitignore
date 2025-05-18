@@ -1,0 +1,21 @@
+# Python
+*.pyc
+__pycache__/
+venv/
+*.env
+.env
+.venv
+
+# PyInstaller
+build/
+dist/
+*.spec # 如果你不希望分享 .spec 檔案，可以加上這行，但通常 .spec 檔是有用的
+
+# macOS
+.DS_Store
+
+# IDE / Editor specific
+.idea/
+.vscode/ # 除非團隊約定共享 launch.json 或 settings.json 等
+*.swp
+*~
