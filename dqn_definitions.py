@@ -184,34 +184,42 @@ class BugDQNAgent:
         }, model_save_path)
         print(f"Model saved to {model_save_path}")
 
-    def load(self, filename="bug_agent_checkpoint.pth"):
-        current_script_dir = os.path.dirname(os.path.abspath(__file__))
-        # 確保 "trained_models" 是相對於 dqn_definitions.py 所在的目錄
-        # 如果 dqn_definitions.py 和 train.py/test_bug_render.py 在同一層，
-        # 而 trained_models 是 train.py/test_bug_render.py 的同層目錄，路徑需要調整
-        # 但根據您目前的結構，trained_models 應該與 dqn_definitions.py 的父目錄同層，
-        # 或者說，trained_models 是 soul_eater_trainer 下的子目錄。
-        # 假設 'trained_models' 是 soul_eater_trainer 的子目錄
-        trainer_project_root = os.path.dirname(current_script_dir) # 退到 soul_eater_trainer
-        model_load_path = os.path.join(trainer_project_root, "trained_models", filename)
-        
-        # 如果 dqn_definitions.py 就在 soul_eater_trainer/ 目錄下：
-        # model_load_path = os.path.join(current_script_dir, "trained_models", filename)
 
-        if not os.path.exists(model_load_path): # 先檢查檔案是否存在
+    def load(self, filename_or_path="bug_agent_checkpoint.pth"):
+        current_script_dir = os.path.dirname(os.path.abspath(__file__)) # dqn_definitions.py 所在的目錄
+        trainer_project_root = os.path.dirname(current_script_dir) # 退回到 soul_eater_trainer/
+
+        model_load_path = ""
+
+        # ⭐️ 修改：判斷傳入的是否包含路徑
+        if os.path.sep in filename_or_path or (os.altsep and os.altsep in filename_or_path):
+            # 如果包含路徑分隔符，則認為是相對於專案根目錄的路徑
+            # 例如 "opponent_models/level2.pth"
+            model_load_path = os.path.join(trainer_project_root, filename_or_path)
+            print(f"DEBUG: Loading model using provided path relative to project root: {model_load_path}")
+        else:
+            # 如果不包含路徑分隔符，則預設在 "trained_models/" 目錄下查找 (原行為)
+            # 例如 "bug_agent_ep1000.pth"
+            model_load_path = os.path.join(trainer_project_root, "trained_models", filename_or_path)
+            print(f"DEBUG: Loading model from default 'trained_models' directory: {model_load_path}")
+
+        # 移除舊的 alt_model_load_path 邏輯，因為現在路徑判斷更清晰了
+        # if not os.path.exists(model_load_path):
+        #     # ... (舊的 alt path 檢查) ...
+        #     return False
+
+        if not os.path.exists(model_load_path):
             print(f"Model file not found at {model_load_path}")
-            # 嘗試另一種可能的相對路徑，如果 trained_models 與 dqn_definitions.py 同級
-            alt_model_load_path = os.path.join(current_script_dir, "..", "trained_models", filename) # ../trained_models/
-            if os.path.exists(alt_model_load_path):
-                model_load_path = alt_model_load_path
+            # ⭐️ 新增一個嘗試：如果 filename_or_path 是一個絕對路徑且存在
+            if os.path.isabs(filename_or_path) and os.path.exists(filename_or_path):
+                print(f"DEBUG: Attempting to load model from absolute path: {filename_or_path}")
+                model_load_path = filename_or_path
             else:
-                 # 再嘗試 trained_models 是 dqn_definitions.py 的子目錄 (不太可能，但作為備案)
-                 alt_model_load_path_2 = os.path.join(current_script_dir, "trained_models", filename)
-                 if os.path.exists(alt_model_load_path_2):
-                     model_load_path = alt_model_load_path_2
-                 else:
-                     print(f"Also not found at {alt_model_load_path} or {alt_model_load_path_2}")
-                     return False
+                # 嘗試另一種可能：如果 filename_or_path 是相對於 dqn_definitions.py 所在目錄的 trained_models 或 opponent_models
+                # 這種情況比較複雜，優先級較低。主要依賴 trainer_project_root。
+                # 為了簡潔，我們先不加過於複雜的備用路徑查找。
+                # 上面的邏輯應該能覆蓋主要情況。
+                return False
 
 
         if os.path.exists(model_load_path):
@@ -219,70 +227,72 @@ class BugDQNAgent:
                 checkpoint = torch.load(model_load_path, map_location=self.device)
                 
                 state_dict_to_load = None
-                # ⭐️ 嘗試不同的鍵來獲取 state_dict
                 if isinstance(checkpoint, dict):
                     if 'model_state_dict' in checkpoint:
                         state_dict_to_load = checkpoint['model_state_dict']
-                        print(f"Found state_dict under 'model_state_dict' key in {filename}")
-                    elif 'modelB' in checkpoint: # 來自 pong-soul/train_iterative.py 的格式
+                        # print(f"Found state_dict under 'model_state_dict' key in {filename_or_path}")
+                    elif 'modelB' in checkpoint: 
                         state_dict_to_load = checkpoint['modelB']
-                        print(f"Found state_dict under 'modelB' key in {filename}")
-                    elif 'model' in checkpoint: # 另一種可能的格式
+                        # print(f"Found state_dict under 'modelB' key in {filename_or_path}")
+                    elif 'model' in checkpoint: 
                         state_dict_to_load = checkpoint['model']
-                        print(f"Found state_dict under 'model' key in {filename}")
+                        # print(f"Found state_dict under 'model' key in {filename_or_path}")
                     else:
-                        # 如果 checkpoint 本身就是 state_dict (例如直接 torch.save(model.state_dict(), path))
-                        # 但這種情況下，下面的 isinstance(state_dict_to_load, dict) 可能不適用
-                        # 為了安全，我們先假設它總是在一個字典的鍵下
-                        print(f"ERROR: Expected keys ('model_state_dict', 'modelB', 'model') not found in checkpoint dictionary for {filename}. Keys found: {list(checkpoint.keys())}")
-                        return False
-                elif isinstance(checkpoint, OrderedDict) or isinstance(checkpoint, dict): # type: ignore
-                    # 假設 checkpoint 本身就是 state_dict (較少見但可能)
+                        # 檢查是否 checkpoint 本身就是 state_dict
+                        is_likely_state_dict = True
+                        for key in checkpoint.keys():
+                            if not isinstance(checkpoint[key], torch.Tensor):
+                                is_likely_state_dict = False
+                                break
+                        if is_likely_state_dict:
+                            state_dict_to_load = checkpoint
+                            # print(f"Checkpoint for {filename_or_path} appears to be a raw state_dict itself.")
+                        else:
+                            print(f"ERROR: Expected keys ('model_state_dict', 'modelB', 'model') not found in checkpoint dictionary for {filename_or_path}. Keys found: {list(checkpoint.keys())}")
+                            return False
+                elif isinstance(checkpoint, (torch.Tensor, OrderedDict)): # type: ignore # (OrderedDict often from older torch saves)
+                    # 假設 checkpoint 本身就是 state_dict
                     state_dict_to_load = checkpoint
-                    print(f"Checkpoint for {filename} appears to be a raw state_dict itself.")
+                    # print(f"Checkpoint for {filename_or_path} appears to be a raw state_dict itself (OrderedDict or Tensor).")
+
                 else:
-                    print(f"ERROR: Checkpoint for {filename} is not a dictionary or recognized state_dict format. Type: {type(checkpoint)}")
+                    print(f"ERROR: Checkpoint for {filename_or_path} is not a dictionary or recognized state_dict format. Type: {type(checkpoint)}")
                     return False
 
                 if state_dict_to_load:
-                    # ⭐️ 兼容舊的 QNet 鍵名 (fc.0, fc.2, fc.4) 到新的 (features, fc_V, fc_A)
-                    # 這段邏輯複製自 pong-soul/game/ai_agent.py 中的 AIAgent._load_model
                     is_new_architecture = any(k.startswith(("features.", "fc_V.", "fc_A.")) for k in state_dict_to_load.keys())
                     
                     if is_new_architecture:
-                        print(f"Loading NEW QNet architecture for {filename} (features, fc_V, fc_A).")
+                        # print(f"Loading NEW QNet architecture for {filename_or_path} (features, fc_V, fc_A).")
                         self.qnetwork_local.load_state_dict(state_dict_to_load, strict=True)
-                    else: # 舊的 fc.X 架構
-                        print(f"Detected OLD QNet architecture for {filename} (fc.0, fc.2, fc.4). Performing key mapping.")
+                    else: 
+                        # print(f"Detected OLD QNet architecture for {filename_or_path} (fc.0, fc.2, fc.4). Performing key mapping.")
                         mapped_state_dict = {}
                         has_fc4 = "fc.4.weight" in state_dict_to_load and "fc.4.bias" in state_dict_to_load
 
                         for k, v in state_dict_to_load.items():
                             if k.startswith("fc.0."): mapped_state_dict[k.replace("fc.0.", "features.0.")] = v
                             elif k.startswith("fc.2."): mapped_state_dict[k.replace("fc.2.", "features.2.")] = v
-                            # 不處理 fc.4. 到 features 的映射，因為 fc.4 要映射到 fc_V 和 fc_A
-
+                        
                         if has_fc4:
-                            # 映射到 Dueling heads
                             mapped_state_dict["fc_A.weight_mu"] = state_dict_to_load["fc.4.weight"]
                             mapped_state_dict["fc_A.bias_mu"] = state_dict_to_load["fc.4.bias"]
                             mapped_state_dict["fc_V.weight_mu"] = state_dict_to_load["fc.4.weight"].mean(dim=0, keepdim=True)
                             mapped_state_dict["fc_V.bias_mu"] = state_dict_to_load["fc.4.bias"].mean().unsqueeze(0)
-                            print(f"Mapped fc.4 from {filename} to Dueling heads (fc_A, fc_V).")
+                            # print(f"Mapped fc.4 from {filename_or_path} to Dueling heads (fc_A, fc_V).")
                         else:
-                            print(f"ERROR: Old architecture state_dict for {filename} is missing 'fc.4.weight' or 'fc.4.bias'. Cannot map to Dueling heads.")
-                            # 載入部分，strict=False 會忽略缺少的鍵
+                            print(f"WARNING: Old architecture state_dict for {filename_or_path} is missing 'fc.4.weight' or 'fc.4.bias'. Cannot map to Dueling heads if it was intended for them.")
                         
                         self.qnetwork_local.load_state_dict(mapped_state_dict, strict=False)
-                        print(f"Loaded mapped state_dict for {filename} with strict=False.")
+                        # print(f"Loaded mapped state_dict for {filename_or_path} with strict=False.")
 
-                    self.qnetwork_target.load_state_dict(self.qnetwork_local.state_dict()) # 確保目標網路同步
+                    self.qnetwork_target.load_state_dict(self.qnetwork_local.state_dict()) 
                     self.qnetwork_local.to(self.device)
                     self.qnetwork_target.to(self.device)
-                    print(f"Model {filename} successfully loaded and mapped to device: {self.device}")
+                    print(f"Model {filename_or_path} (loaded from {model_load_path}) successfully loaded and mapped to device: {self.device}")
                     return True
                 else:
-                    print(f"ERROR: Could not extract state_dict from checkpoint for {filename}.")
+                    print(f"ERROR: Could not extract state_dict from checkpoint for {filename_or_path}.")
                     return False
 
             except Exception as e:
@@ -290,6 +300,7 @@ class BugDQNAgent:
                 import traceback
                 traceback.print_exc()
                 return False
-        else: # 這部分應該在上面已處理，但再次確認
-            print(f"Model file not found at {model_load_path} (final check).")
+        else: 
+            # 這個分支理論上應該在更早的 os.path.exists(model_load_path) 檢查中被捕獲
+            print(f"Model file not found at {model_load_path} (final check in load method).")
             return False

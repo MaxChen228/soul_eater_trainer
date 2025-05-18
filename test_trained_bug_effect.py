@@ -30,7 +30,7 @@ def run_evaluation():
     env_cfg = CONFIG.get('environment_settings', {})
     opponent_ai_cfg = env_cfg.get('opponent_ai_settings', {"use_dynamic_opponent": False}) # ⭐️ 讀取對手AI設定
 
-    model_filename = eval_cfg.get('model_to_evaluate', "bug_agent_ep2500.pth")
+    model_filename = eval_cfg.get('model_to_evaluate', "bug_agent_ep3000.pth")
     
     skill_params_from_config = env_cfg.get('skill_params', {}).copy()
     skill_params_for_eval = skill_params_from_config
@@ -132,7 +132,7 @@ def run_evaluation():
 
 if __name__ == '__main__':
     eval_cfg = CONFIG.get('evaluation_settings', {})
-    model_to_evaluate_from_config = eval_cfg.get('model_to_evaluate', "bug_agent_ep3200.pth")
+    model_to_evaluate_from_config = eval_cfg.get('model_to_evaluate', "bug_agent_ep3000.pth")
     
     trainer_dir = os.path.dirname(os.path.abspath(__file__))
     model_path_to_check = os.path.join(trainer_dir, "trained_models", model_to_evaluate_from_config)

@@ -34,11 +34,24 @@ class SimplifiedSoulEaterBugSkill:
         self.activated_time = 0
         self.active = False
 
+        # ⭐️ 新增：從 params 讀取蟲的初始位置隨機範圍
+        self.initial_bug_x_min = params.get("initial_bug_x_min", 0.4) # 提供預設值
+        self.initial_bug_x_max = params.get("initial_bug_x_max", 0.6)
+        self.initial_bug_y_min = params.get("initial_bug_y_min", 0.75)
+        self.initial_bug_y_max = params.get("initial_bug_y_max", 0.85)
+
+
     def activate(self):
         self.active = True
         self.activated_time = pygame.time.get_ticks()
-        self.env.ball_x = 0.5
-        self.env.ball_y = 0.3
+        
+        # ⭐️ 修改：隨機化蟲的初始位置
+        self.env.ball_x = random.uniform(self.initial_bug_x_min, self.initial_bug_x_max)
+        self.env.ball_y = random.uniform(self.initial_bug_y_min, self.initial_bug_y_max)
+        # 確保初始位置在邊界內 (雖然隨機範圍應該已經考慮，但多一層保護)
+        self.env.ball_x = np.clip(self.env.ball_x, self.bug_visual_radius_norm, 1.0 - self.bug_visual_radius_norm)
+        self.env.ball_y = np.clip(self.env.ball_y, self.bug_visual_radius_norm, 1.0 - self.bug_visual_radius_norm)
+        
         self.env.trail.clear()
 
     def deactivate(self, hit_paddle=False, scored=False):
@@ -49,10 +62,9 @@ class SimplifiedSoulEaterBugSkill:
         bug_y_norm = self.env.ball_y
         target_paddle_x_norm = self.target_player_state.x
         target_paddle_half_width_norm = self.target_player_state.paddle_width_normalized / 2.0
-        if self.target_player_state == self.env.opponent:
-            bug_y_distance_to_goal_line = bug_y_norm
-        else:
-            bug_y_distance_to_goal_line = 1.0 - bug_y_norm
+        
+        bug_y_distance_to_goal_line = bug_y_norm # Y=0 是目標線
+
         observation = [
             bug_x_norm, bug_y_norm, target_paddle_x_norm,
             target_paddle_half_width_norm, bug_x_norm - target_paddle_x_norm,
@@ -72,17 +84,8 @@ class SimplifiedSoulEaterBugSkill:
              self.env.trail.pop(0)
 
     def _check_bug_scored(self):
-        target_goal_line_y_norm = 0.0
-        scored_condition = False
-        if self.target_player_state == self.env.opponent:
-            target_goal_line_y_norm = self.env.paddle_height_normalized * 0.5
-            if self.env.ball_y - self.bug_visual_radius_norm <= target_goal_line_y_norm:
-                scored_condition = True
-        else:
-            target_goal_line_y_norm = 1.0 - (self.env.paddle_height_normalized * 0.5)
-            if self.env.ball_y + self.bug_visual_radius_norm >= target_goal_line_y_norm:
-                scored_condition = True
-        if scored_condition:
+        target_goal_line_y_norm = self.bug_visual_radius_norm 
+        if self.env.ball_y <= target_goal_line_y_norm:
             self.target_player_state.lives -= 1
             self.env.round_concluded_by_skill = True
             self.deactivate(scored=True)
@@ -93,100 +96,199 @@ class SimplifiedSoulEaterBugSkill:
         target_paddle = self.target_player_state
         target_paddle_x_min = target_paddle.x - target_paddle.paddle_width_normalized / 2
         target_paddle_x_max = target_paddle.x + target_paddle.paddle_width_normalized / 2
+        
         bug_x_min = self.env.ball_x - self.bug_visual_radius_norm
         bug_x_max = self.env.ball_x + self.bug_visual_radius_norm
-        bug_y_min = self.env.ball_y - self.bug_visual_radius_norm
-        bug_y_max = self.env.ball_y + self.bug_visual_radius_norm
-        paddle_y_min, paddle_y_max = 0, 0
-        if target_paddle == self.env.opponent:
-            paddle_y_min = 0
-            paddle_y_max = self.env.paddle_height_normalized
-        else:
-            paddle_y_min = 1.0 - self.env.paddle_height_normalized
-            paddle_y_max = 1.0
+        bug_y_min = self.env.ball_y - self.bug_visual_radius_norm 
+        bug_y_max = self.env.ball_y + self.bug_visual_radius_norm 
+
+        paddle_y_surface_min = 0 
+        paddle_y_surface_max = self.env.paddle_height_normalized 
+
         x_overlap = bug_x_max >= target_paddle_x_min and bug_x_min <= target_paddle_x_max
-        y_overlap = bug_y_max >= paddle_y_min and bug_y_min <= paddle_y_max
-        if x_overlap and y_overlap:
+        y_overlap_with_paddle_face = (bug_y_min <= paddle_y_surface_max and \
+                                      bug_y_min >= paddle_y_surface_min) 
+
+        if x_overlap and y_overlap_with_paddle_face:
             self.env.round_concluded_by_skill = True
             self.deactivate(hit_paddle=True)
             return True
         return False
 
+
 # --- BugSkillTrainingEnv (修改版) ---
 class BugSkillTrainingEnv:
-    def __init__(self, render_training=False, skill_params=None, opponent_ai_config=None): # ⭐️ 新增 opponent_ai_config
+    def __init__(self, render_training=False, skill_params=None, opponent_ai_config=None, reward_shaping_config=None, config=None): # 參數列表保持不變
         pygame.init()
 
-        self.skill_owner_is_player1 = True
+        self.skill_owner_is_player1 = True 
         self.render_size = 400
-        self.paddle_height_normalized = 10 / self.render_size
-        self.ball_radius_normalized = 10 / self.render_size # 遊戲球的，蟲有自己的半徑
+        self.paddle_height_normalized = 10 / self.render_size # 對手板子的高度
         self.time_scale = 1.0
         self.max_trail_length = 15
 
-        self.p1_skill_owner = PlayerState(player_identifier="p1_skill_owner")
+        # 技能擁有者 (P1, 假設在螢幕下方，未使用其板子)
+        self.p1_skill_owner = PlayerState(player_identifier="p1_skill_owner", initial_x=0.5)
+        # 技能目標對手 (P2, 板子在螢幕上方 Y=0 附近)
         self.p2_target_opponent = PlayerState(
-            player_identifier="p2_target",
-            initial_paddle_width_normalized=60/self.render_size # 假設目標板的預設寬度
+            player_identifier="p2_target", 
+            initial_paddle_width_normalized=60/self.render_size # 對手板子寬度
         )
         
         self.mock_env_for_skill = self._create_mock_env_for_skill()
 
+        # 準備技能參數，包含新的初始位置範圍
         default_skill_params = {
-            "bug_x_rl_move_speed": 0.03, "bug_y_rl_move_speed": 0.03,
-            "base_y_speed": 0.015, "duration_ms": 8000,
-            "bug_visual_radius_norm": (20 * 1.5) / 2 / self.render_size
+            "bug_x_rl_move_speed": 0.03, 
+            "bug_y_rl_move_speed": 0.03,
+            "base_y_speed": 0.015,          # 蟲的基礎Y軸移動速度
+            "duration_ms": 8000,            # 技能持續時間
+            "bug_visual_radius_norm_factor": 0.0375, # 用於計算蟲的視覺/碰撞半徑
+            "max_steps_for_impatience": 700, # 用於急躁懲罰計算的最大步數
+            # ⭐️ 新增：蟲初始位置隨機範圍的預設值
+            "initial_bug_x_min": 0.4,       # X軸最小隨機起始位置
+            "initial_bug_x_max": 0.6,       # X軸最大隨機起始位置
+            "initial_bug_y_min": 0.75,      # Y軸最小隨機起始位置 (離下方較遠)
+            "initial_bug_y_max": 0.85       # Y軸最大隨機起始位置 (離下方較近)
         }
-        current_skill_params = skill_params if skill_params is not None else default_skill_params
+        self.current_skill_params = default_skill_params.copy() # 從預設值開始
+        if skill_params is not None:
+            self.current_skill_params.update(skill_params) # 使用傳入的 skill_params 覆蓋預設值
+
+        # 根據 factor 計算實際的 bug_visual_radius_norm，並確保它在 current_skill_params 中
+        # 這個半徑將傳遞給 SimplifiedSoulEaterBugSkill 用於碰撞和邊界檢測
+        self.current_skill_params["bug_visual_radius_norm"] = self.current_skill_params.get("bug_visual_radius_norm_factor", 0.0375)
         
+        # 實例化蟲技能，傳入包含所有必要參數（包括新位置參數）的 current_skill_params
         self.bug_skill_instance = SimplifiedSoulEaterBugSkill(
-            self.mock_env_for_skill, self.p1_skill_owner, self.p2_target_opponent, current_skill_params
+            self.mock_env_for_skill, self.p1_skill_owner, self.p2_target_opponent, self.current_skill_params
         )
         
-        # ⭐️ 初始化目標板子 AI
+# In training_environment.py
+# Within BugSkillTrainingEnv class, inside __init__ method:
+
+        # ... (之前的 skill_params 和 bug_skill_instance 初始化) ...
+        
+        # 初始化對手板子 AI
         self.opponent_agent = None
         self.use_dynamic_opponent = False
-        self.opponent_paddle_move_speed = 0.03 # 預設移動速度
+        self.opponent_paddle_move_speed = 0.03 
         if opponent_ai_config and opponent_ai_config.get("use_dynamic_opponent", False):
             self.use_dynamic_opponent = True
-            model_filename = opponent_ai_config.get("model_filename")
+            
+            model_filename_config_value = opponent_ai_config.get("model_filename") # e.g., "level2.pth" or "*RANDOM*"
+            opponent_model_dir_name = opponent_ai_config.get("opponent_model_directory", "opponent_models/")
+            
             self.opponent_paddle_move_speed = opponent_ai_config.get("paddle_move_speed", 0.03)
-            if model_filename:
-                # 假設板子AI也使用7個輸入和3個輸出 (左, 中, 右)
-                # 如果不同，需要在 opponent_ai_config 中指定
-                opp_qnet_input_dim = opponent_ai_config.get("qnet_input_dim", 7)
-                opp_qnet_output_dim = opponent_ai_config.get("qnet_output_dim", 3)
+            
+            chosen_model_filename = None # 將要實際載入的模型檔案名
+
+            if model_filename_config_value == "*RANDOM*":
+                # ⭐️ 實現隨機選取模型的邏輯
+                try:
+                    # current_env_dir 是 training_environment.py 所在的目錄 (soul_eater_trainer/)
+                    # opponent_model_dir_path 是 soul_eater_trainer/opponent_models/
+                    opponent_model_dir_path = os.path.join(current_env_dir, opponent_model_dir_name) # current_env_dir 在檔案頂部定義
+                    
+                    if os.path.exists(opponent_model_dir_path) and os.path.isdir(opponent_model_dir_path):
+                        # 列出所有 .pth 檔案
+                        pth_files = [f for f in os.listdir(opponent_model_dir_path) if f.endswith(".pth")]
+                        if pth_files:
+                            chosen_model_filename = random.choice(pth_files)
+                            print(f"Randomly selected opponent AI model: {chosen_model_filename} from {opponent_model_dir_path}")
+                        else:
+                            print(f"WARNING: No .pth files found in opponent model directory: {opponent_model_dir_path}. Opponent will be static or random fallback.")
+                            self.use_dynamic_opponent = False # 無法選取，則不使用動態對手
+                    else:
+                        print(f"WARNING: Opponent model directory not found: {opponent_model_dir_path}. Opponent will be static or random fallback.")
+                        self.use_dynamic_opponent = False # 目錄不存在，則不使用動態對手
+                except Exception as e:
+                    print(f"Error during random opponent model selection: {e}. Opponent will be static or random fallback.")
+                    self.use_dynamic_opponent = False
+            else:
+                # 如果不是 "*RANDOM*"，則使用配置中指定的檔案名
+                chosen_model_filename = model_filename_config_value
+
+            # 只有在成功選擇了模型檔案名 (且 use_dynamic_opponent 仍為 True) 時才繼續載入
+            if self.use_dynamic_opponent and chosen_model_filename:
+                # 組合完整的模型路徑 (與第二點修改的邏輯相同)
+                # full_model_path_to_load 是 "opponent_models/chosen_model_filename.pth"
+                full_model_path_to_load = os.path.join(opponent_model_dir_name, chosen_model_filename)
+
+                opp_qnet_input_dim = opponent_ai_config.get("qnet_input_dim", 7) 
+                opp_qnet_output_dim = opponent_ai_config.get("qnet_output_dim", 3) 
                 
                 self.opponent_agent = BugDQNAgent(state_size=opp_qnet_input_dim, action_size=opp_qnet_output_dim, seed=random.randint(0,10000))
-                if self.opponent_agent.load(model_filename): # BugDQNAgent.load 會處理 'trained_models' 路徑
-                    print(f"Successfully loaded opponent paddle AI model: {model_filename}")
+                
+                if self.opponent_agent.load(full_model_path_to_load): 
+                    print(f"Successfully loaded opponent paddle AI model from: {full_model_path_to_load}")
                 else:
-                    print(f"WARNING: Could not load opponent paddle AI model '{model_filename}'. Opponent will be static or random.")
-                    self.opponent_agent = None # 載入失敗則不使用
-                    self.use_dynamic_opponent = False # 改回非動態
-            else:
-                print("WARNING: 'use_dynamic_opponent' is true, but 'model_filename' is not specified for opponent AI. Opponent will be static or random.")
+                    print(f"WARNING: Could not load opponent paddle AI model from '{full_model_path_to_load}'. Opponent will be static or random fallback.")
+                    self.opponent_agent = None 
+                    self.use_dynamic_opponent = False 
+            elif self.use_dynamic_opponent and not chosen_model_filename: # 如果設定為動態但最終沒有選到模型
+                print(f"WARNING: 'use_dynamic_opponent' is true, but no opponent model could be chosen (model_filename: {model_filename_config_value}). Opponent will be static or random fallback.")
                 self.use_dynamic_opponent = False
 
+        # 讀取並儲存獎勵塑造參數 (這部分來自之前的修改，保持完整)
+        self.rsc = reward_shaping_config if reward_shaping_config else {} 
+        self.step_penalty = self.rsc.get('step_penalty', -0.01)
+        self.score_reward = self.rsc.get('score_reward', 10.0)
+        self.hit_paddle_penalty = self.rsc.get('hit_paddle_penalty', -5.0)
+        self.duration_expired_penalty = self.rsc.get('duration_expired_penalty', -1.0)
+
+        self.enable_movement_reward = self.rsc.get('enable_movement_reward', False)
+        self.movement_reward_factor = self.rsc.get('movement_reward_factor', 0.005)
+        
+        self.enable_impatience_penalty = self.rsc.get('enable_impatience_penalty', False)
+        self.impatience_m = self.rsc.get('impatience_penalty_m', 0.001)
+        self.impatience_n = self.rsc.get('impatience_penalty_n', 0.05)
+        self.impatience_k = self.rsc.get('impatience_penalty_k', 2.0)
+        # max_steps_for_impatience 從 current_skill_params 獲取 (因為它是從 train.py 傳入 skill_params 的)
+        self.max_steps_for_impatience = self.current_skill_params.get('max_steps_for_impatience', 700)
+
+        self.enable_baseline_progress_reward = self.rsc.get('enable_baseline_progress_reward', False)
+        self.baseline_progress_reward_factor = self.rsc.get('baseline_progress_reward_factor', 0.3)
+
+        self.enable_paddle_avoidance_penalty = self.rsc.get('enable_paddle_avoidance_penalty', False)
+        self.paddle_avoidance_penalty_factor = self.rsc.get('paddle_avoidance_penalty_factor', -0.2) 
+        self.paddle_danger_zone_y_threshold = self.rsc.get('paddle_danger_zone_y_threshold', 0.15)
+
+        # 用於計算獎勵的先前狀態變數
+        # 這些值將在 reset() 方法中，於 bug_skill_instance.activate() 之後被正確更新
+        self.previous_bug_x = self.current_skill_params.get("initial_bug_x_min", 0.5) 
+        self.previous_bug_y = self.current_skill_params.get("initial_bug_y_max", 0.8) 
+        self.current_steps_in_episode = 0
+
+        # 渲染相關設定
         self.render_training = render_training
+        self.screen = None
+        self.clock = None
+        self.font = None
+        self.bug_image_render = None # 渲染用的蟲圖片表面
         if self.render_training:
-            self.screen = pygame.display.set_mode((self.render_size, self.render_size + 100))
+            self.screen = pygame.display.set_mode((self.render_size, self.render_size + 100)) # 遊戲區域 +下方資訊區域
             pygame.display.set_caption("Bug Skill Training")
             self.clock = pygame.time.Clock()
-            self.font = pygame.font.Font(None, 24)
-            self.bug_image_render = None
+            self.font = pygame.font.Font(None, 24) # 使用預設字體
+            
+            # 嘗試載入蟲的圖片用於渲染
             try:
-                bug_image_path = "placeholder_bug.png"
-                full_image_path = os.path.join(current_env_dir, bug_image_path)
+                bug_image_path = "placeholder_bug.png" # 確保此圖片存在於 training_environment.py 同目錄下
+                full_image_path = os.path.join(current_env_dir, bug_image_path) # current_env_dir 在檔案開頭定義
                 if os.path.exists(full_image_path):
                     raw_bug_surf = pygame.image.load(full_image_path).convert_alpha()
-                    render_diameter = int(current_skill_params["bug_visual_radius_norm"] * 2 * self.render_size)
+                    # 使用 current_skill_params 中的 bug_visual_radius_norm (不是 factor) 計算渲染直徑
+                    render_diameter = int(self.current_skill_params["bug_visual_radius_norm"] * 2 * self.render_size)
                     if render_diameter > 0:
                          self.bug_image_render = pygame.transform.smoothscale(raw_bug_surf, (render_diameter, render_diameter))
+                    else:
+                        print(f"Warning: Calculated bug render_diameter is {render_diameter}. Bug image not scaled.")
                 else:
-                    print(f"Warning: Bug image '{bug_image_path}' not found. Will use fallback rendering.")
+                    print(f"Warning: Bug image '{bug_image_path}' not found at '{full_image_path}'. Will use fallback rendering.")
             except Exception as e:
                 print(f"Error setting up bug image: {e}. Will use fallback rendering.")
+
 
     def _create_mock_env_for_skill(self):
         mock_env = type('MockEnv', (object,), {})()
@@ -207,23 +309,25 @@ class BugSkillTrainingEnv:
         return mock_env
 
     def reset(self):
-        # 重置目標板子位置
-        self.p2_target_opponent.x = random.uniform(0.2, 0.8) # 稍微限制一下範圍
+        self.p2_target_opponent.x = random.uniform(
+            self.p2_target_opponent.paddle_width_normalized / 2, 
+            1.0 - self.p2_target_opponent.paddle_width_normalized / 2
+        )
         self.p2_target_opponent.prev_x = self.p2_target_opponent.x
         self.p2_target_opponent.lives = 1 
         
         self.mock_env_for_skill.round_concluded_by_skill = False
-        self.bug_skill_instance.activate() # 這會設定蟲的初始位置
+        self.bug_skill_instance.activate() # ⭐️ 這一步會隨機設定 mock_env_for_skill.ball_x 和 ball_y
 
-        # ⭐️ 重置模擬的球速和旋轉 (隨機化一點，讓板子AI的初始觀察多樣化)
-        angle_deg = random.uniform(-60, 60)
-        angle_rad = np.radians(angle_deg)
-        initial_speed = 0.02 # 假設一個初始速度
-        self.mock_env_for_skill.ball_vx = initial_speed * np.sin(angle_rad)
-        # 蟲是從上方(0.3)開始向下移動，所以初始vy可以設為正值
-        self.mock_env_for_skill.ball_vy = initial_speed * np.cos(angle_rad) 
-        self.mock_env_for_skill.spin = random.uniform(-5, 5)
+        self.mock_env_for_skill.ball_vx = 0.0
+        self.mock_env_for_skill.ball_vy = 0.0 
+        self.mock_env_for_skill.spin = random.uniform(-1, 1)
 
+        # ⭐️ MODIFIED: 更新 previous_bug_x/y 為 activate() 後的隨機值
+        self.previous_bug_x = self.mock_env_for_skill.ball_x
+        self.previous_bug_y = self.mock_env_for_skill.ball_y
+        self.current_steps_in_episode = 0
+        
         return self.bug_skill_instance._get_bug_observation()
 
     def _get_opponent_paddle_observation(self):
